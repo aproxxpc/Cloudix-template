@@ -345,14 +345,29 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
             if temporary.exists():
                 temporary.unlink()
 
-    def _is_vnc_ready(self):
+    def _is_port_listening(self, port):
+        target_hex = f":{port:04X}"
+        checked_proc = False
+        for proc_path in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                content = Path(proc_path).read_text(encoding="ascii")
+                checked_proc = True
+                for line in content.splitlines()[1:]:
+                    fields = line.split()
+                    if len(fields) >= 4 and fields[1].endswith(target_hex) and fields[3] == "0A":
+                        return True
+            except OSError:
+                continue
+        if checked_proc:
+            return False
         try:
-            with socket.create_connection(("127.0.0.1", 5900), timeout=1.0) as sock:
-                sock.settimeout(1.0)
-                banner = sock.recv(12)
-                return banner.startswith(b"RFB ")
+            with socket.create_connection(("127.0.0.1", port), timeout=1.0):
+                return True
         except OSError:
             return False
+
+    def _is_vnc_ready(self):
+        return self._is_port_listening(5900) and self._is_port_listening(6082)
 
     def _send_json(self, status, body):
         encoded_body = json.dumps(body).encode("utf-8")
