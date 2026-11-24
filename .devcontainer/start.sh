@@ -18,27 +18,41 @@ printf 'username=%s\n' "$AUTH_USERNAME" > "$AUTH_FILE"
 chmod 600 "$AUTH_FILE"
 
 # 0. Kill stale service processes before starting this workspace's version
-pkill -9 -f x11vnc 2>/dev/null || true
+pkill -9 -x x11vnc 2>/dev/null || true
+pkill -9 -x Xtigervnc 2>/dev/null || true
 pkill -9 -f websockify 2>/dev/null || true
 pkill -9 -f xfce4 2>/dev/null || true
-pkill -9 -f Xvfb 2>/dev/null || true
+pkill -9 -x Xvfb 2>/dev/null || true
 pkill -9 -f cloudflared 2>/dev/null || true
 pkill -9 -f audio_streamer.py 2>/dev/null || true
 sudo nginx -s stop -c "$REPO_DIR/.devcontainer/nginx.conf" 2>/dev/null || true
 sudo pkill -9 nginx 2>/dev/null || true
+sleep 1
 
 # 1.5 Fix DBus machine-id & X11 Unix socket permissions (Prevents Black Screen & D-Bus crash)
 sudo dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
 sudo mkdir -p /var/lib/dbus 2>/dev/null || true
 sudo dbus-uuidgen --ensure=/var/lib/dbus/machine-id 2>/dev/null || true
-sudo rm -f /tmp/.X1-lock 2>/dev/null || true
+sudo rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
 sudo mkdir -p /tmp/.X11-unix 2>/dev/null || true
 sudo chmod 1777 /tmp/.X11-unix 2>/dev/null || true
 
-# 2. Use a balanced 16-bit display so desktop UI scales to a more normal size
+# 2. Start 24-bit virtual X display so XFCE, Chrome, and x11vnc run reliably on Ubuntu 24.04
 export DISPLAY=:1
-nohup Xvfb :1 -screen 0 960x540x16 -ac +extension GLX +render -noreset </dev/null > /tmp/xvfb.log 2>&1 &
-sleep 2
+nohup Xvfb :1 -screen 0 1280x720x24 -ac +extension GLX +render -noreset </dev/null > /tmp/xvfb.log 2>&1 &
+XVFB_READY=0
+for _ in $(seq 1 15); do
+    if [ -S /tmp/.X11-unix/X1 ]; then
+        XVFB_READY=1
+        break
+    fi
+    sleep 1
+done
+if [ "$XVFB_READY" -ne 1 ]; then
+    echo "ERROR: Xvfb failed to start on :1. Log output:"
+    cat /tmp/xvfb.log 2>/dev/null || true
+    exit 1
+fi
 
 # 3. Start PulseAudio Virtual Sound Card
 pulseaudio -D --exit-idle-time=-1 2>/dev/null || true
@@ -207,10 +221,57 @@ bash "$REPO_DIR/.devcontainer/update_desktop.sh"
 xfce4-panel --restart
 sleep 2
 
-# 5. Keep idle polling light and shorten screen response during user input
-nohup x11vnc -display :1 -rfbport 5900 -localhost -nopw -forever -shared -repeat \
-    -nowf -wait 10 -defer 10 -wait_ui 2 </dev/null > /tmp/x11vnc.log 2>&1 &
-sleep 2
+check_vnc_ready() {
+    python3 - <<'PY'
+import socket
+for _ in range(15):
+    try:
+        with socket.create_connection(("127.0.0.1", 5900), timeout=1.0) as s:
+            s.settimeout(1.0)
+            banner = s.recv(12)
+            if banner.startswith(b"RFB "):
+                raise SystemExit(0)
+    except OSError:
+        pass
+    import time
+    time.sleep(1)
+raise SystemExit(1)
+PY
+}
+
+# 5. Start Ubuntu 24.04 safe x11vnc on IPv4 loopback port 5900
+nohup x11vnc -display :1 -rfbport 5900 -listen 127.0.0.1 -nopw -forever -shared \
+    -noxdamage -noxrecord -noshm -repeat -nowf -wait 10 -defer 10 </dev/null > /tmp/x11vnc.log 2>&1 &
+if ! check_vnc_ready; then
+    echo "WARNING: primary x11vnc startup did not answer RFB on 127.0.0.1:5900. Retrying safe flags..."
+    cat /tmp/x11vnc.log 2>/dev/null || true
+    pkill -9 -x x11vnc 2>/dev/null || true
+    sleep 1
+    nohup x11vnc -display :1 -rfbport 5900 -listen 127.0.0.1 -nopw -forever -shared \
+        -noxdamage -noxrecord -noshm -noxfixes -noxinerama </dev/null > /tmp/x11vnc.log 2>&1 &
+    if ! check_vnc_ready; then
+        echo "WARNING: fallback x11vnc failed. Log:"
+        cat /tmp/x11vnc.log 2>/dev/null || true
+        if command -v Xtigervnc >/dev/null 2>&1; then
+            echo "=== [Cloudix] Switching to Xtigervnc standalone VNC server on :1 ==="
+            pkill -9 -x x11vnc 2>/dev/null || true
+            pkill -9 -f xfce4 2>/dev/null || true
+            pkill -9 -x Xvfb 2>/dev/null || true
+            sleep 1
+            sudo rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+            nohup Xtigervnc :1 -geometry 1280x720 -depth 24 -rfbport 5900 -SecurityTypes None -localhost yes -AlwaysShared=1 </dev/null > /tmp/xtigervnc.log 2>&1 &
+            sleep 2
+            nohup xfce4-session </dev/null > /tmp/xfce4-session.log 2>&1 &
+            sleep 2
+            nohup xfdesktop </dev/null > /tmp/xfdesktop.log 2>&1 &
+        fi
+        if ! check_vnc_ready; then
+            echo "ERROR: VNC server is not responding on 127.0.0.1:5900; refusing to start tunnel."
+            exit 1
+        fi
+    fi
+fi
+echo "=== [Cloudix] VNC server verified active on 127.0.0.1:5900 ==="
 
 # 6. Start Real-time Audio Streamer on port 6081
 nohup python3 "$REPO_DIR/.devcontainer/audio_streamer.py" </dev/null > /tmp/audio_streamer.log 2>&1 &
@@ -229,19 +290,19 @@ if [ "$AUDIO_READY" -ne 1 ]; then
     cat /tmp/audio_streamer.log 2>/dev/null || true
 fi
 
-# 7. Start Websockify and Unified Nginx Proxy on port 6080
+# 7. Start Websockify (explicit IPv4 127.0.0.1:5900) and Unified Nginx Proxy on port 6080
 if ! command -v nginx >/dev/null 2>&1; then
     echo "ERROR: nginx is required to serve the desktop web interface."
     exit 1
 fi
-nohup websockify 127.0.0.1:6082 localhost:5900 </dev/null > /tmp/websockify.log 2>&1 &
+nohup websockify 127.0.0.1:6082 127.0.0.1:5900 </dev/null > /tmp/websockify.log 2>&1 &
 if ! sudo nginx -c "$REPO_DIR/.devcontainer/nginx.conf"; then
     echo "ERROR: Could not start nginx proxy."
     exit 1
 fi
 sleep 2
 
-# Confirm nginx and upstream setup-status/health are serving 200 before opening tunnel.
+# Confirm nginx, audio/health API, AND WebSocket VNC bridge are working before opening tunnel.
 PROXY_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
     http://127.0.0.1:6080/vnc.html)"
 HEALTH_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -250,6 +311,42 @@ if [ "$PROXY_STATUS" != 200 ] || [ "$HEALTH_STATUS" != 200 ]; then
     echo "ERROR: Local proxy check failed (vnc=$PROXY_STATUS, health=$HEALTH_STATUS); refusing to start tunnel."
     exit 1
 fi
+if ! python3 - <<'PY'
+import base64, os, socket, time
+key = base64.b64encode(os.urandom(16)).decode()
+req = (
+    "GET /websockify HTTP/1.1\r\n"
+    "Host: 127.0.0.1:6080\r\n"
+    "Upgrade: websocket\r\n"
+    "Connection: Upgrade\r\n"
+    f"Sec-WebSocket-Key: {key}\r\n"
+    "Sec-WebSocket-Version: 13\r\n"
+    "Sec-WebSocket-Protocol: binary\r\n\r\n"
+).encode()
+for _ in range(10):
+    try:
+        with socket.create_connection(("127.0.0.1", 6080), timeout=4.0) as s:
+            s.settimeout(4.0)
+            s.sendall(req)
+            resp = s.recv(4096)
+            if b"101 Switching Protocols" in resp:
+                if b"RFB " in resp:
+                    raise SystemExit(0)
+                more = s.recv(1024)
+                if b"RFB " in more:
+                    raise SystemExit(0)
+    except OSError:
+        pass
+    time.sleep(1)
+raise SystemExit(1)
+PY
+then
+    echo "ERROR: Local /websockify bridge failed RFB handshake. Websockify/Nginx logs:"
+    cat /tmp/websockify.log 2>/dev/null || true
+    cat /tmp/nginx_error.log 2>/dev/null || true
+    exit 1
+fi
+echo "=== [Cloudix] WebSocket /websockify -> VNC RFB bridge verified ==="
 
 # 7.5 Keep the Codespaces forwarded port private
 if [ -n "$CODESPACE_NAME" ]; then

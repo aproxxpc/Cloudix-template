@@ -171,6 +171,7 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
                 {
                     "setup_required": SETUP_TOKEN_FILE.is_file(),
                     "username": username,
+                    "vnc_ready": self._is_vnc_ready(),
                 },
             )
             return
@@ -343,6 +344,15 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
         finally:
             if temporary.exists():
                 temporary.unlink()
+
+    def _is_vnc_ready(self):
+        try:
+            with socket.create_connection(("127.0.0.1", 5900), timeout=1.0) as sock:
+                sock.settimeout(1.0)
+                banner = sock.recv(12)
+                return banner.startswith(b"RFB ")
+        except OSError:
+            return False
 
     def _send_json(self, status, body):
         encoded_body = json.dumps(body).encode("utf-8")

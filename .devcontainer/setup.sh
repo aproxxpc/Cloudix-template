@@ -12,7 +12,7 @@ sudo ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime 2>/dev/null || true
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" --no-install-recommends \
     xfce4 xfce4-terminal xfce4-taskmanager \
-    xvfb x11vnc novnc websockify \
+    xvfb xauth x11vnc novnc websockify \
     dbus-x11 xarchiver file-roller \
     curl wget git unzip python3-pip python3-venv \
     pulseaudio pulseaudio-utils ffmpeg nginx \
@@ -23,6 +23,10 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     yaru-theme-gtk yaru-theme-icon ubuntu-wallpapers-noble fonts-ubuntu \
     xfce4-whiskermenu-plugin mousepad ristretto evince xfce4-screenshooter \
     xdg-user-dirs gvfs gvfs-backends librsvg2-bin
+
+# Optional TigerVNC fallback if x11vnc encounters display extension issues
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    tigervnc-standalone-server || true
 
 # 2. Install Google Chrome Desktop
 if [ ! -f /usr/bin/google-chrome ]; then
