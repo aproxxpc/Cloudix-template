@@ -63,19 +63,24 @@ class AudioBroadcaster:
     def __init__(self):
         self.clients = set()
         self.clients_lock = threading.Lock()
-        self.process = subprocess.Popen(
-            PCM_STREAM_CMD,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=0,
-        )
-        self.reader = threading.Thread(target=self._read_audio, daemon=True)
-        self.reader.start()
+        try:
+            self.process = subprocess.Popen(
+                PCM_STREAM_CMD,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+            )
+            self.reader = threading.Thread(target=self._read_audio, daemon=True)
+            self.reader.start()
+        except OSError as error:
+            self.process = None
+            print(f"WARNING: Could not start PulseAudio capture: {error}", flush=True)
 
     def add_client(self):
-        if self.process.poll() is not None:
+        if self.process is None or self.process.poll() is not None:
+            code = self.process.returncode if self.process else -1
             raise RuntimeError(
-                f"Audio capture exited with status {self.process.returncode}"
+                f"Audio capture exited with status {code}"
             )
         client_queue = queue.Queue(maxsize=2)
         with self.clients_lock:
@@ -87,17 +92,22 @@ class AudioBroadcaster:
             self.clients.discard(client_queue)
 
     def _read_audio(self):
+        if self.process is None or self.process.stdout is None:
+            return
         pending = bytearray()
-        while True:
-            chunk = os.read(
-                self.process.stdout.fileno(), PCM_FRAME_BYTES - len(pending)
-            )
-            if not chunk:
-                break
-            pending.extend(chunk)
-            if len(pending) == PCM_FRAME_BYTES:
-                self._broadcast(bytes(pending))
-                pending.clear()
+        try:
+            while True:
+                chunk = os.read(
+                    self.process.stdout.fileno(), PCM_FRAME_BYTES - len(pending)
+                )
+                if not chunk:
+                    break
+                pending.extend(chunk)
+                if len(pending) == PCM_FRAME_BYTES:
+                    self._broadcast(bytes(pending))
+                    pending.clear()
+        except OSError:
+            pass
 
         if self.process.poll() is not None:
             print(
@@ -141,18 +151,21 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         clean_path = self.path.split("?")[0].rstrip("/")
         if clean_path == "/setup-status":
+            username = "cloudix"
             try:
-                username = next(
-                    (
-                        line.partition("=")[2]
-                        for line in CREDENTIALS_FILE.read_text(encoding="utf-8").splitlines()
-                        if line.startswith("username=")
-                    ),
-                    "",
-                )
+                if CREDENTIALS_FILE.is_file():
+                    found_user = next(
+                        (
+                            line.partition("=")[2]
+                            for line in CREDENTIALS_FILE.read_text(encoding="utf-8").splitlines()
+                            if line.startswith("username=")
+                        ),
+                        "",
+                    )
+                    if found_user:
+                        username = found_user
             except OSError:
-                self._send_json(500, {"error": "Could not read desktop credentials."})
-                return
+                pass
             self._send_json(
                 200,
                 {

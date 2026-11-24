@@ -4,32 +4,18 @@ echo "=== [Cloudix] Starting Automated Desktop & Audio Services ==="
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_DIR="${HOME}/.config/cloudix"
 AUTH_FILE="${CONFIG_DIR}/credentials"
-AUTH_HASH_FILE="${CONFIG_DIR}/nginx.htpasswd"
 SETUP_TOKEN_FILE="${CONFIG_DIR}/setup-token"
 mkdir -p "$CONFIG_DIR"
-if [ ! -s "$AUTH_FILE" ]; then
-    AUTH_PASSWORD="$(openssl rand -hex 18)"
-    printf 'username=cloudix\npassword=%s\n' "$AUTH_PASSWORD" > "$AUTH_FILE"
-    chmod 600 "$AUTH_FILE"
-    openssl rand -hex 24 > "$SETUP_TOKEN_FILE"
-    chmod 600 "$SETUP_TOKEN_FILE"
+rm -f "$SETUP_TOKEN_FILE"
+AUTH_USERNAME="cloudix"
+if [ -s "$AUTH_FILE" ]; then
+    EXISTING_USER="$(sed -n 's/^username=//p' "$AUTH_FILE" | head -n 1)"
+    if [ -n "$EXISTING_USER" ]; then
+        AUTH_USERNAME="$EXISTING_USER"
+    fi
 fi
-AUTH_USERNAME="$(sed -n 's/^username=//p' "$AUTH_FILE")"
-AUTH_PASSWORD="$(sed -n 's/^password=//p' "$AUTH_FILE")"
-if [ -z "$AUTH_USERNAME" ] || [ -z "$AUTH_PASSWORD" ]; then
-    echo "ERROR: Missing Cloudix browser credentials in $AUTH_FILE."
-    exit 1
-fi
-AUTH_HASH="$(printf '%s' "$AUTH_PASSWORD" | openssl passwd -apr1 -stdin)" || {
-    echo "ERROR: Could not hash Cloudix browser password."
-    exit 1
-}
-printf '%s:%s\n' "$AUTH_USERNAME" "$AUTH_HASH" |
-    tee "$AUTH_HASH_FILE" >/dev/null
-sudo chgrp nogroup "$CONFIG_DIR" "$AUTH_HASH_FILE"
-sudo chmod 2750 "$CONFIG_DIR"
-chmod 640 "$AUTH_HASH_FILE"
-sudo ln -sfn "$AUTH_HASH_FILE" /etc/nginx/cloudix.htpasswd
+printf 'username=%s\n' "$AUTH_USERNAME" > "$AUTH_FILE"
+chmod 600 "$AUTH_FILE"
 
 # 0. Kill stale service processes before starting this workspace's version
 pkill -9 -f x11vnc 2>/dev/null || true
@@ -39,6 +25,7 @@ pkill -9 -f Xvfb 2>/dev/null || true
 pkill -9 -f cloudflared 2>/dev/null || true
 pkill -9 -f audio_streamer.py 2>/dev/null || true
 sudo nginx -s stop -c "$REPO_DIR/.devcontainer/nginx.conf" 2>/dev/null || true
+sudo pkill -9 nginx 2>/dev/null || true
 
 # 1.5 Fix DBus machine-id & X11 Unix socket permissions (Prevents Black Screen & D-Bus crash)
 sudo dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
@@ -50,7 +37,7 @@ sudo chmod 1777 /tmp/.X11-unix 2>/dev/null || true
 
 # 2. Use a balanced 16-bit display so desktop UI scales to a more normal size
 export DISPLAY=:1
-Xvfb :1 -screen 0 960x540x16 -ac +extension GLX +render -noreset > /tmp/xvfb.log 2>&1 &
+nohup Xvfb :1 -screen 0 960x540x16 -ac +extension GLX +render -noreset </dev/null > /tmp/xvfb.log 2>&1 &
 sleep 2
 
 # 3. Start PulseAudio Virtual Sound Card
@@ -166,13 +153,13 @@ if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] || [ -z "$DBUS_SESSION_BUS_PID" ]; then
     exit 1
 fi
 export DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
-xfce4-session > /tmp/xfce4-session.log 2>&1 &
+nohup xfce4-session </dev/null > /tmp/xfce4-session.log 2>&1 &
 sleep 2
 xfconf-query -c xfwm4 -p /general/use_compositing -s false 2>/dev/null || true
 if pgrep -u "$USER" -x xfdesktop >/dev/null; then
     xfdesktop --reload
 else
-    xfdesktop > /tmp/xfdesktop.log 2>&1 &
+    nohup xfdesktop </dev/null > /tmp/xfdesktop.log 2>&1 &
 fi
 
 # 4.1 Apply Ubuntu's Yaru appearance while keeping the lightweight XFCE session
@@ -221,18 +208,18 @@ xfce4-panel --restart
 sleep 2
 
 # 5. Keep idle polling light and shorten screen response during user input
-x11vnc -display :1 -rfbport 5900 -localhost -nopw -forever -shared -repeat \
-    -nowf -wait 10 -defer 10 -wait_ui 2 &
+nohup x11vnc -display :1 -rfbport 5900 -localhost -nopw -forever -shared -repeat \
+    -nowf -wait 10 -defer 10 -wait_ui 2 </dev/null > /tmp/x11vnc.log 2>&1 &
 sleep 2
 
 # 6. Start Real-time Audio Streamer on port 6081
-python3 "$REPO_DIR/.devcontainer/audio_streamer.py" > /tmp/audio_streamer.log 2>&1 &
+nohup python3 "$REPO_DIR/.devcontainer/audio_streamer.py" </dev/null > /tmp/audio_streamer.log 2>&1 &
 sleep 1
 AUDIO_READY=0
 for _ in $(seq 1 15); do
     if curl --silent http://127.0.0.1:6081/health | grep -q "OK"; then
         AUDIO_READY=1
-        echo "=== [Cloudix Audio] Audio streamer & setup API is active on port 6081 ==="
+        echo "=== [Cloudix Audio] Audio streamer & status API is active on port 6081 ==="
         break
     fi
     sleep 1
@@ -244,21 +231,23 @@ fi
 
 # 7. Start Websockify and Unified Nginx Proxy on port 6080
 if ! command -v nginx >/dev/null 2>&1; then
-    echo "ERROR: nginx is required to password-protect the public browser link."
+    echo "ERROR: nginx is required to serve the desktop web interface."
     exit 1
 fi
-websockify 127.0.0.1:6082 localhost:5900 &
+nohup websockify 127.0.0.1:6082 localhost:5900 </dev/null > /tmp/websockify.log 2>&1 &
 if ! sudo nginx -c "$REPO_DIR/.devcontainer/nginx.conf"; then
-    echo "ERROR: Could not start the authenticated nginx proxy."
+    echo "ERROR: Could not start nginx proxy."
     exit 1
 fi
 sleep 2
 
-# Confirm the password gate is active before opening any public tunnel.
-AUTH_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+# Confirm nginx and upstream setup-status/health are serving 200 before opening tunnel.
+PROXY_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
     http://127.0.0.1:6080/vnc.html)"
-if [ "$AUTH_STATUS" != 401 ]; then
-    echo "ERROR: Browser access is not password-protected (HTTP $AUTH_STATUS); refusing to start tunnel."
+HEALTH_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    http://127.0.0.1:6080/api/health)"
+if [ "$PROXY_STATUS" != 200 ] || [ "$HEALTH_STATUS" != 200 ]; then
+    echo "ERROR: Local proxy check failed (vnc=$PROXY_STATUS, health=$HEALTH_STATUS); refusing to start tunnel."
     exit 1
 fi
 
@@ -273,7 +262,7 @@ if [ -n "$CODESPACE_NAME" ]; then
     fi
 fi
 
-# 8. Start an authenticated public Cloudflare browser tunnel
+# 8. Start public Cloudflare browser tunnel
 CF_BIN="$(command -v cloudflared || true)"
 if [ -z "$CF_BIN" ] && [ -x /usr/local/bin/cloudflared ]; then
     CF_BIN=/usr/local/bin/cloudflared
@@ -283,7 +272,7 @@ if [ -z "$CF_BIN" ]; then
     exit 1
 fi
 : > /tmp/cloudflared.log
-nohup "$CF_BIN" tunnel --url http://127.0.0.1:6080 > /tmp/cloudflared.log 2>&1 &
+nohup "$CF_BIN" tunnel --url http://127.0.0.1:6080 </dev/null > /tmp/cloudflared.log 2>&1 &
 TUNNEL_URL=""
 for _ in $(seq 1 30); do
     TUNNEL_URL="$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log 2>/dev/null | tail -n 1)"
@@ -295,22 +284,25 @@ if [ -z "$TUNNEL_URL" ]; then
     exit 1
 fi
 
-# 9. Print status & authenticated browser URL
+# Wait briefly for Cloudflare edge tunnel registration & health readiness before publishing link
+for _ in $(seq 1 15); do
+    if grep -q "Registered tunnel connection" /tmp/cloudflared.log 2>/dev/null; then
+        if curl --silent --fail --max-time 4 "${TUNNEL_URL}/api/health" >/dev/null 2>&1; then
+            break
+        fi
+    fi
+    sleep 1
+done
+
+# 9. Print status & browser URL
 echo "=========================================================="
 echo "Cloudix Linux Desktop is ready."
 DESKTOP_URL="${TUNNEL_URL}/vnc.html?autoconnect=true&resize=scale&quality=2&compression=1"
-echo "🌐 Authenticated browser link: $DESKTOP_URL"
-echo "Username: $AUTH_USERNAME"
-echo "Password is saved in $AUTH_FILE (owner-readable only)."
-printf 'Cloudix authenticated browser link:\n%s\nUsername: %s\n' \
+echo "🌐 Browser link: $DESKTOP_URL"
+printf 'Cloudix browser link:\n%s\nUsername: %s\n' \
     "$DESKTOP_URL" "$AUTH_USERNAME" > "$REPO_DIR/DESKTOP_LINK.txt"
 printf 'Codespace: %s\n' "${CODESPACE_NAME:-unknown}" >> "$REPO_DIR/DESKTOP_LINK.txt"
-if [ -s "$SETUP_TOKEN_FILE" ]; then
-    printf 'Setup required: yes\n' >> "$REPO_DIR/DESKTOP_LINK.txt"
-    printf 'Setup code: %s\n' "$(cat "$SETUP_TOKEN_FILE")" >> "$REPO_DIR/DESKTOP_LINK.txt"
-else
-    printf 'Setup required: no\n' >> "$REPO_DIR/DESKTOP_LINK.txt"
-fi
+printf 'Setup required: no\n' >> "$REPO_DIR/DESKTOP_LINK.txt"
 
 if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
     echo "ERROR: GitHub CLI is not authenticated; cannot publish DESKTOP_LINK.txt."
