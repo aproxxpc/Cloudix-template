@@ -226,8 +226,21 @@ x11vnc -display :1 -rfbport 5900 -localhost -nopw -forever -shared -repeat \
 sleep 2
 
 # 6. Start Real-time Audio Streamer on port 6081
-python3 .devcontainer/audio_streamer.py > /tmp/audio_streamer.log 2>&1 &
+python3 "$REPO_DIR/.devcontainer/audio_streamer.py" > /tmp/audio_streamer.log 2>&1 &
 sleep 1
+AUDIO_READY=0
+for _ in $(seq 1 15); do
+    if curl --silent http://127.0.0.1:6081/health | grep -q "OK"; then
+        AUDIO_READY=1
+        echo "=== [Cloudix Audio] Audio streamer & setup API is active on port 6081 ==="
+        break
+    fi
+    sleep 1
+done
+if [ "$AUDIO_READY" -ne 1 ]; then
+    echo "WARNING: audio_streamer.py did not respond on port 6081 within 15 seconds. Log:"
+    cat /tmp/audio_streamer.log 2>/dev/null || true
+fi
 
 # 7. Start Websockify and Unified Nginx Proxy on port 6080
 if ! command -v nginx >/dev/null 2>&1; then

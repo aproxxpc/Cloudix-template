@@ -139,7 +139,8 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/setup-status":
+        clean_path = self.path.split("?")[0].rstrip("/")
+        if clean_path == "/setup-status":
             try:
                 username = next(
                     (
@@ -161,11 +162,11 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if self.path == "/audiows":
+        if clean_path == "/audiows":
             self.do_audio_websocket()
             return
 
-        if self.path == "/health":
+        if clean_path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -173,7 +174,7 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"OK")
             return
 
-        if self.path.startswith("/launch"):
+        if clean_path.startswith("/launch"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -239,7 +240,8 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
                     proc.kill()
 
     def do_POST(self):
-        if self.path != "/setup-auth":
+        clean_path = self.path.split("?")[0].rstrip("/")
+        if clean_path != "/setup-auth":
             self.send_error(404)
             return
 
@@ -437,6 +439,7 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
 
 def main():
     print(f"=== [Cloudix Audio] Starting PulseAudio Streamer on port {PORT} ===")
+    ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("127.0.0.1", PORT), AudioStreamHandler)
     server.audio_broadcaster = AudioBroadcaster()
     try:
