@@ -9,56 +9,65 @@ export TZ=Etc/UTC
 sudo ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime 2>/dev/null || true
 
 # 1. Update and install GUI base + VNC + utilities + Sound & Nginx
-sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
+sudo DEBIAN_FRONTEND=noninteractive apt-get update -y --fix-missing
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" --no-install-recommends \
     xfce4 xfce4-terminal xfce4-taskmanager \
     xvfb xauth x11vnc novnc websockify \
     dbus-x11 xarchiver file-roller \
     curl wget git unzip python3-pip python3-venv \
     pulseaudio pulseaudio-utils ffmpeg nginx \
-    htop gh xterm
+    htop gh xterm x11-xserver-utils desktop-file-utils
 
 # Install the Ubuntu look-and-feel and everyday desktop applications explicitly.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    yaru-theme-gtk yaru-theme-icon ubuntu-wallpapers-noble fonts-ubuntu \
+    yaru-theme-gtk yaru-theme-icon fonts-ubuntu \
     xfce4-whiskermenu-plugin mousepad ristretto evince xfce4-screenshooter \
-    xdg-user-dirs gvfs gvfs-backends librsvg2-bin
+    xdg-user-dirs gvfs gvfs-backends librsvg2-bin || true
+
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ubuntu-wallpapers-noble || true
 
 # Optional TigerVNC fallback if x11vnc encounters display extension issues
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     tigervnc-standalone-server || true
 
 # 2. Install Google Chrome Desktop
-if [ ! -f /usr/bin/google-chrome ]; then
+if [ ! -x /usr/bin/google-chrome-stable ] && [ ! -x /usr/bin/google-chrome ]; then
     echo "=== [Cloudix] Installing Google Chrome ==="
-    wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/chrome.deb || sudo DEBIAN_FRONTEND=noninteractive apt-get -f install -y
+    if curl -fsSL --retry 3 --retry-delay 2 https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb || \
+       wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb; then
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/chrome.deb || sudo DEBIAN_FRONTEND=noninteractive apt-get -f install -y
+    fi
     rm -f /tmp/chrome.deb
 fi
 
 # 3. Install Microsoft VS Code Desktop
-if [ ! -f /usr/share/code/code ]; then
+if [ ! -x /usr/share/code/code ]; then
     echo "=== [Cloudix] Installing VS Code Desktop ==="
-    wget -q https://update.code.visualstudio.com/latest/linux-deb-x64/stable -O /tmp/code.deb
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/code.deb || sudo DEBIAN_FRONTEND=noninteractive apt-get -f install -y
+    if curl -fsSL --retry 3 --retry-delay 2 https://update.code.visualstudio.com/latest/linux-deb-x64/stable -o /tmp/code.deb || \
+       wget -q https://update.code.visualstudio.com/latest/linux-deb-x64/stable -O /tmp/code.deb; then
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/code.deb || sudo DEBIAN_FRONTEND=noninteractive apt-get -f install -y
+    fi
     rm -f /tmp/code.deb
 fi
 
 # 4. Install Cloudflare Tunnel for authenticated browser access
 if [ ! -x /usr/local/bin/cloudflared ]; then
     echo "=== [Cloudix] Installing Cloudflare Tunnel ==="
-    sudo curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+    sudo curl -fsSL --retry 3 --retry-delay 2 https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
         -o /usr/local/bin/cloudflared
     sudo chmod +x /usr/local/bin/cloudflared
 fi
 
 # 5. Install Godot Engine (2D & 3D Game Maker)
-if [ ! -f /usr/local/bin/godot ]; then
+if [ ! -x /usr/local/bin/godot ]; then
     echo "=== [Cloudix] Installing Godot Engine (2D & 3D Game Maker) ==="
-    wget -q https://github.com/godotengine/godot/releases/download/3.5.3-stable/Godot_v3.5.3-stable_x11.64.zip -O /tmp/godot.zip
-    unzip -q /tmp/godot.zip -d /tmp/
-    sudo mv /tmp/Godot_v3.5.3-stable_x11.64 /usr/local/bin/godot
-    sudo chmod +x /usr/local/bin/godot
+    if curl -fsSL --retry 3 --retry-delay 2 https://github.com/godotengine/godot/releases/download/3.5.3-stable/Godot_v3.5.3-stable_x11.64.zip -o /tmp/godot.zip || \
+       wget -q https://github.com/godotengine/godot/releases/download/3.5.3-stable/Godot_v3.5.3-stable_x11.64.zip -O /tmp/godot.zip; then
+        unzip -qo /tmp/godot.zip -d /tmp/
+        sudo mv /tmp/Godot_v3.5.3-stable_x11.64 /usr/local/bin/godot
+        sudo chmod +x /usr/local/bin/godot
+    fi
     rm -f /tmp/godot.zip
 fi
 

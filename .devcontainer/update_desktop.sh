@@ -19,7 +19,7 @@ for folder in Documents Downloads Music Pictures Videos; do
 done
 
 # Use the actual app artwork where the installed applications provide it.
-GODOT_ICON_NAME=games-app
+GODOT_ICON_NAME=applications-games
 GODOT_ICON_SOURCE=/usr/share/code/resources/app/extensions/theme-modern-icons/fileicons/images/godot.svg
 GODOT_ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps"
 GODOT_ICON_PATH="${GODOT_ICON_DIR}/cloudix-godot.png"
@@ -28,6 +28,11 @@ if [ -f "$GODOT_ICON_SOURCE" ] && command -v rsvg-convert >/dev/null 2>&1; then
     sed 's/currentColor/#478CBF/g' "$GODOT_ICON_SOURCE" |
         rsvg-convert --width 256 --height 256 --output "$GODOT_ICON_PATH"
     GODOT_ICON_NAME="$GODOT_ICON_PATH"
+fi
+
+VSCODE_ICON=vscode
+if [ -f /usr/share/code/resources/app/resources/linux/code.png ]; then
+    VSCODE_ICON=/usr/share/code/resources/app/resources/linux/code.png
 fi
 
 ANTIGRAVITY_ICON=applications-development
@@ -105,14 +110,14 @@ Categories=Development;
 EOF
 
     # 3. VS Code
-    cat << 'EOF' > "$DESK/code.desktop"
+    cat << EOF > "$DESK/code.desktop"
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=Visual Studio Code
 Comment=Code Editing. Redefined.
 Exec=/usr/share/code/code --no-sandbox --unity-launch --reuse-window %F
-Icon=vscode
+Icon=${VSCODE_ICON}
 Terminal=false
 StartupNotify=false
 Categories=Development;IDE;
@@ -305,13 +310,15 @@ if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     done
 fi
 
-# Force XFCE Desktop to instantly start / reload icons
-export DISPLAY=:1
-if pgrep -x xfdesktop >/dev/null; then
-    xfdesktop --reload 2>/dev/null || true
-else
-    nohup xfdesktop >/dev/null 2>&1 &
-    sleep 1
+# Force XFCE Desktop to reload icons when an X display is active
+export DISPLAY="${DISPLAY:-:1}"
+if [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ] || xset q >/dev/null 2>&1; then
+    if pgrep -x xfdesktop >/dev/null; then
+        xfdesktop --reload 2>/dev/null || true
+    else
+        setsid nohup xfdesktop </dev/null >/dev/null 2>&1 &
+        sleep 1
+    fi
 fi
 
 echo "=========================================================="

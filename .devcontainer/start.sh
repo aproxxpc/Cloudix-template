@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cloudix-template-v5
+# cloudix-template-v6
 
 echo "=== [Cloudix] Starting Automated Desktop & Audio Services ==="
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,6 +23,11 @@ pkill -9 -x x11vnc 2>/dev/null || true
 pkill -9 -x Xtigervnc 2>/dev/null || true
 pkill -9 -f websockify 2>/dev/null || true
 pkill -9 -f xfce4 2>/dev/null || true
+pkill -9 -x xfce4-panel 2>/dev/null || true
+pkill -9 -x xfdesktop 2>/dev/null || true
+pkill -9 -x xfsettingsd 2>/dev/null || true
+pkill -9 -x xfwm4 2>/dev/null || true
+pkill -9 -x xfconfd 2>/dev/null || true
 pkill -9 -x Xvfb 2>/dev/null || true
 pkill -9 -f cloudflared 2>/dev/null || true
 pkill -9 -f audio_streamer.py 2>/dev/null || true
@@ -50,12 +55,12 @@ except OSError:
 PY
 }
 
-# 2. Start 24-bit X display (prefer integrated Xtigervnc, fallback to Xvfb + x11vnc)
+# 2. Start 24-bit X display at 960x540 so desktop UI scales cleanly on mobile (prefer Xtigervnc, fallback to Xvfb + x11vnc)
 export DISPLAY=:1
 USING_TIGERVNC=0
 if command -v Xtigervnc >/dev/null 2>&1; then
     : > /tmp/xtigervnc.log
-    setsid nohup Xtigervnc :1 -geometry 1280x720 -depth 24 -rfbport 5900 \
+    setsid nohup Xtigervnc :1 -geometry 960x540 -depth 24 -rfbport 5900 \
         -SecurityTypes None -interface 127.0.0.1 </dev/null > /tmp/xtigervnc.log 2>&1 &
     for _ in $(seq 1 12); do
         if [ -S /tmp/.X11-unix/X1 ] && check_port_rfb; then
@@ -76,7 +81,7 @@ fi
 
 if [ "$USING_TIGERVNC" -ne 1 ]; then
     : > /tmp/xvfb.log
-    setsid nohup Xvfb :1 -screen 0 1280x720x24 -ac +extension GLX +render -noreset </dev/null > /tmp/xvfb.log 2>&1 &
+    setsid nohup Xvfb :1 -screen 0 960x540x24 -ac +extension GLX +render -noreset </dev/null > /tmp/xvfb.log 2>&1 &
     XVFB_READY=0
     for _ in $(seq 1 15); do
         if [ -S /tmp/.X11-unix/X1 ]; then
@@ -189,7 +194,163 @@ PY
 sudo install -m 0644 "$REPO_DIR/.devcontainer/browser_audio.js" \
     /usr/share/novnc/cloudix_audio.js
 
-# 4. Start XFCE Desktop session with compositing disabled (zero lag)
+# 4. Ensure Ubuntu UI/UX packages & panel config are ready before starting XFCE
+if ! dpkg -s yaru-theme-gtk >/dev/null 2>&1 || ! dpkg -s xfce4-whiskermenu-plugin >/dev/null 2>&1 || ! command -v xrandr >/dev/null 2>&1; then
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        yaru-theme-gtk yaru-theme-icon fonts-ubuntu xfce4-whiskermenu-plugin \
+        mousepad ristretto evince xfce4-screenshooter x11-xserver-utils desktop-file-utils >/dev/null 2>&1 || true
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ubuntu-wallpapers-noble >/dev/null 2>&1 || true
+fi
+
+XFCE_XML_DIR="${HOME}/.config/xfce4/xfconf/xfce-perchannel-xml"
+PANEL_XML="${XFCE_XML_DIR}/xfce4-panel.xml"
+PANEL_DIR="${HOME}/.config/xfce4/panel"
+mkdir -p "$XFCE_XML_DIR" \
+    "${PANEL_DIR}/launcher-17" "${PANEL_DIR}/launcher-18" \
+    "${PANEL_DIR}/launcher-19" "${PANEL_DIR}/launcher-20"
+
+VSCODE_PANEL_ICON=vscode
+if [ -f /usr/share/code/resources/app/resources/linux/code.png ]; then
+    VSCODE_PANEL_ICON=/usr/share/code/resources/app/resources/linux/code.png
+fi
+cat > "${PANEL_DIR}/launcher-17/17940020141.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Google Chrome
+Exec=/usr/bin/google-chrome-stable --no-sandbox --enable-webgl --enable-unsafe-swiftshader --disable-background-networking --disable-component-update --disable-sync --no-first-run %U
+Icon=google-chrome
+Terminal=false
+StartupNotify=true
+Categories=Utility;
+EOF
+cat > "${PANEL_DIR}/launcher-18/17940020142.desktop" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Visual Studio Code
+Exec=/usr/share/code/code --no-sandbox --unity-launch %F
+Icon=${VSCODE_PANEL_ICON}
+Terminal=false
+StartupNotify=true
+Categories=Utility;
+EOF
+cat > "${PANEL_DIR}/launcher-19/17940020143.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=File Manager
+Exec=thunar
+Icon=system-file-manager
+Terminal=false
+StartupNotify=true
+Categories=Utility;
+EOF
+cat > "${PANEL_DIR}/launcher-20/17940020144.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminal
+Exec=/usr/bin/xfce4-terminal --disable-server
+Icon=org.xfce.terminal
+Terminal=false
+StartupNotify=true
+Categories=Utility;
+EOF
+chmod +x "${PANEL_DIR}"/launcher-{17,18,19,20}/*.desktop 2>/dev/null || true
+
+if [ ! -s "$PANEL_XML" ] || ! grep -q 'whiskermenu' "$PANEL_XML" 2>/dev/null || ! grep -q 'panel-2' "$PANEL_XML" 2>/dev/null; then
+    cat > "$PANEL_XML" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-panel" version="1.0">
+  <property name="configver" type="int" value="2"/>
+  <property name="panels" type="array">
+    <value type="int" value="1"/>
+    <value type="int" value="2"/>
+    <property name="dark-mode" type="bool" value="true"/>
+    <property name="panel-1" type="empty">
+      <property name="position" type="string" value="p=6;x=0;y=0"/>
+      <property name="length" type="uint" value="100"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="icon-size" type="uint" value="22"/>
+      <property name="size" type="uint" value="32"/>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="1"/>
+        <value type="int" value="2"/>
+        <value type="int" value="3"/>
+        <value type="int" value="4"/>
+        <value type="int" value="5"/>
+        <value type="int" value="6"/>
+      </property>
+    </property>
+    <property name="panel-2" type="empty">
+      <property name="autohide-behavior" type="uint" value="1"/>
+      <property name="position" type="string" value="p=10;x=0;y=0"/>
+      <property name="length" type="uint" value="1"/>
+      <property name="length-adjust" type="bool" value="true"/>
+      <property name="mode" type="uint" value="0"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="size" type="uint" value="42"/>
+      <property name="icon-size" type="uint" value="32"/>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="17"/>
+        <value type="int" value="18"/>
+        <value type="int" value="19"/>
+        <value type="int" value="20"/>
+      </property>
+    </property>
+  </property>
+  <property name="plugins" type="empty">
+    <property name="plugin-1" type="string" value="whiskermenu">
+      <property name="show-button-title" type="bool" value="true"/>
+      <property name="button-title" type="string" value="Applications"/>
+      <property name="show-button-icon" type="bool" value="true"/>
+      <property name="button-icon" type="string" value="start-here"/>
+    </property>
+    <property name="plugin-2" type="string" value="tasklist">
+      <property name="flat-buttons" type="bool" value="true"/>
+      <property name="show-handle" type="bool" value="false"/>
+    </property>
+    <property name="plugin-3" type="string" value="separator">
+      <property name="expand" type="bool" value="true"/>
+      <property name="style" type="uint" value="0"/>
+    </property>
+    <property name="plugin-4" type="string" value="systray">
+      <property name="show-frame" type="bool" value="false"/>
+      <property name="size-max" type="uint" value="22"/>
+    </property>
+    <property name="plugin-5" type="string" value="clock">
+      <property name="mode" type="uint" value="2"/>
+    </property>
+    <property name="plugin-6" type="string" value="actions"/>
+    <property name="plugin-17" type="string" value="launcher">
+      <property name="items" type="array">
+        <value type="string" value="17940020141.desktop"/>
+      </property>
+    </property>
+    <property name="plugin-18" type="string" value="launcher">
+      <property name="items" type="array">
+        <value type="string" value="17940020142.desktop"/>
+      </property>
+    </property>
+    <property name="plugin-19" type="string" value="launcher">
+      <property name="items" type="array">
+        <value type="string" value="17940020143.desktop"/>
+      </property>
+    </property>
+    <property name="plugin-20" type="string" value="launcher">
+      <property name="items" type="array">
+        <value type="string" value="17940020144.desktop"/>
+      </property>
+    </property>
+  </property>
+</channel>
+XML
+fi
+
 export DISPLAY=:1
 DBUS_LAUNCH_OUTPUT="$(dbus-launch --sh-syntax)"
 DBUS_SESSION_BUS_ADDRESS="$(
@@ -206,12 +367,24 @@ if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] || [ -z "$DBUS_SESSION_BUS_PID" ]; then
 fi
 export DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
 setsid nohup xfce4-session </dev/null > /tmp/xfce4-session.log 2>&1 &
-sleep 2
-xfconf-query -c xfwm4 -p /general/use_compositing -s false 2>/dev/null || true
-if pgrep -u "$USER" -x xfdesktop >/dev/null; then
-    xfdesktop --reload
-else
+
+for _ in $(seq 1 12); do
+    if xfconf-query -c xsettings -l >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+for _ in $(seq 1 4); do
+    if pgrep -u "$USER" -x xfdesktop >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+xfconf-query -c xfwm4 --create -p /general/use_compositing -t bool -s false 2>/dev/null || true
+if ! pgrep -u "$USER" -x xfdesktop >/dev/null 2>&1; then
     setsid nohup xfdesktop </dev/null > /tmp/xfdesktop.log 2>&1 &
+    sleep 1
 fi
 
 # 4.1 Apply Ubuntu's Yaru appearance while keeping the lightweight XFCE session
@@ -232,31 +405,56 @@ xfconf-query -c xfce4-panel --create -p /panels/panel-2/length-adjust -t bool -s
 xfconf-query -c xfce4-panel --create -p /panels/panel-2/autohide-behavior -t int -s 1
 xfconf-query -c xfce4-desktop --create -p /desktop-icons/style -t int -s 2
 xfconf-query -c xfce4-desktop --create -p /desktop-icons/icon-size -t int -s 36
+xfconf-query -c xfce4-desktop --create -p /desktop-icons/single-click -t bool -s true
 xfconf-query -c xfce4-desktop --create -p /desktop-icons/file-icons/show-home -t bool -s true
 xfconf-query -c xfce4-desktop --create -p /desktop-icons/file-icons/show-trash -t bool -s true
 xfconf-query -c xfce4-desktop --create -p /desktop-icons/file-icons/show-filesystem -t bool -s true
-xfconf-query -c xfce4-desktop --create -p /backdrop/screen0/monitorscreen/workspace0/image-style -t int -s 5
-xfconf-query -c xfce4-panel -p /plugins/plugin-1 -s whiskermenu
+xfconf-query -c xfce4-panel --create -p /plugins/plugin-1 -t string -s whiskermenu
 xfconf-query -c xfce4-panel --create -p /plugins/plugin-1/show-button-title -t bool -s true
 xfconf-query -c xfce4-panel --create -p /plugins/plugin-1/button-title -t string -s Applications
 xfconf-query -c xfce4-panel --create -p /plugins/plugin-1/show-button-icon -t bool -s true
 xfconf-query -c xfce4-panel --create -p /plugins/plugin-1/button-icon -t string -s start-here
+
 WALLPAPER="$(find /usr/share/backgrounds -maxdepth 2 -type f -iname 'Numbat_wallpaper_light*' -print -quit)"
+if [ -z "$WALLPAPER" ]; then
+    WALLPAPER="$(find /usr/share/backgrounds -maxdepth 2 -type f \( -iname '*.png' -o -iname '*.jpg' \) ! -iname '*xfce*' -print -quit)"
+fi
 if [ -z "$WALLPAPER" ]; then
     WALLPAPER=/usr/share/backgrounds/xfce/xfce-blue.jpg
 fi
-xfconf-query -c xfce4-desktop --create \
-    -p /backdrop/screen0/monitorscreen/image-path -t string -s "$(dirname "$WALLPAPER")"
-for workspace in 0 1 2 3; do
+
+MONITOR_KEYS=("monitorVNC-0" "monitorscreen" "monitor0" "monitorVirtual1" "monitorHDMI-1" "monitorDP-1")
+if command -v xrandr >/dev/null 2>&1; then
+    while IFS= read -r out_name; do
+        [ -n "$out_name" ] && MONITOR_KEYS+=("monitor${out_name}")
+    done < <(xrandr --query 2>/dev/null | awk '/ connected/{print $1}')
+fi
+while IFS= read -r existing_mon; do
+    [ -n "$existing_mon" ] && MONITOR_KEYS+=("$existing_mon")
+done < <(xfconf-query -c xfce4-desktop -l 2>/dev/null | sed -n 's|^/backdrop/screen0/\([^/]*\)/.*|\1|p' | sort -u)
+
+declare -A SEEN_MONITORS=()
+for mon in "${MONITOR_KEYS[@]}"; do
+    [ -n "$mon" ] || continue
+    if [ -n "${SEEN_MONITORS[$mon]:-}" ]; then
+        continue
+    fi
+    SEEN_MONITORS["$mon"]=1
     xfconf-query -c xfce4-desktop --create \
-        -p "/backdrop/screen0/monitorscreen/workspace${workspace}/last-image" \
-        -t string -s "$WALLPAPER"
-    xfconf-query -c xfce4-desktop --create \
-        -p "/backdrop/screen0/monitorscreen/workspace${workspace}/image-style" \
-        -t int -s 5
+        -p "/backdrop/screen0/${mon}/image-path" -t string -s "$(dirname "$WALLPAPER")" 2>/dev/null || true
+    for workspace in 0 1 2 3; do
+        xfconf-query -c xfce4-desktop --create \
+            -p "/backdrop/screen0/${mon}/workspace${workspace}/last-image" \
+            -t string -s "$WALLPAPER" 2>/dev/null || true
+        xfconf-query -c xfce4-desktop --create \
+            -p "/backdrop/screen0/${mon}/workspace${workspace}/image-style" \
+            -t int -s 5 2>/dev/null || true
+    done
 done
+
 bash "$REPO_DIR/.devcontainer/update_desktop.sh"
-xfce4-panel --restart
+xfce4-panel --restart 2>/dev/null || setsid nohup xfce4-panel </dev/null >/dev/null 2>&1 &
+xfdesktop --reload 2>/dev/null || true
 sleep 2
 
 check_vnc_ready() {
