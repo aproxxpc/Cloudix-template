@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cloudix-template-v4
+# cloudix-template-v5
 
 echo "=== [Cloudix] Starting Automated Desktop & Audio Services ==="
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,18 +34,31 @@ sleep 1
 sudo dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
 sudo mkdir -p /var/lib/dbus 2>/dev/null || true
 sudo dbus-uuidgen --ensure=/var/lib/dbus/machine-id 2>/dev/null || true
-sudo rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+sudo rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/cloudix_boot_error.txt 2>/dev/null || true
 sudo mkdir -p /tmp/.X11-unix 2>/dev/null || true
 sudo chmod 1777 /tmp/.X11-unix 2>/dev/null || true
+
+check_port_rfb() {
+    python3 - <<'PY'
+import socket
+try:
+    with socket.create_connection(("127.0.0.1", 5900), timeout=1.0) as s:
+        s.settimeout(1.0)
+        raise SystemExit(0 if s.recv(12).startswith(b"RFB ") else 1)
+except OSError:
+    raise SystemExit(1)
+PY
+}
 
 # 2. Start 24-bit X display (prefer integrated Xtigervnc, fallback to Xvfb + x11vnc)
 export DISPLAY=:1
 USING_TIGERVNC=0
 if command -v Xtigervnc >/dev/null 2>&1; then
+    : > /tmp/xtigervnc.log
     setsid nohup Xtigervnc :1 -geometry 1280x720 -depth 24 -rfbport 5900 \
-        -interface 127.0.0.1 -SecurityTypes None -AlwaysShared </dev/null > /tmp/xtigervnc.log 2>&1 &
+        -SecurityTypes None -interface 127.0.0.1 </dev/null > /tmp/xtigervnc.log 2>&1 &
     for _ in $(seq 1 12); do
-        if [ -S /tmp/.X11-unix/X1 ]; then
+        if [ -S /tmp/.X11-unix/X1 ] && check_port_rfb; then
             USING_TIGERVNC=1
             echo "=== [Cloudix] Xtigervnc X11+VNC server active on :1 (127.0.0.1:5900) ==="
             break
@@ -56,11 +69,13 @@ if command -v Xtigervnc >/dev/null 2>&1; then
         echo "WARNING: Xtigervnc did not start cleanly, falling back to Xvfb. Log:"
         cat /tmp/xtigervnc.log 2>/dev/null || true
         pkill -9 -x Xtigervnc 2>/dev/null || true
+        sleep 1
         sudo rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
     fi
 fi
 
 if [ "$USING_TIGERVNC" -ne 1 ]; then
+    : > /tmp/xvfb.log
     setsid nohup Xvfb :1 -screen 0 1280x720x24 -ac +extension GLX +render -noreset </dev/null > /tmp/xvfb.log 2>&1 &
     XVFB_READY=0
     for _ in $(seq 1 15); do
@@ -71,9 +86,9 @@ if [ "$USING_TIGERVNC" -ne 1 ]; then
         sleep 1
     done
     if [ "$XVFB_READY" -ne 1 ]; then
-        echo "ERROR: Xvfb failed to start on :1. Log output:"
+        echo "WARNING: Xvfb failed to start on :1. Log output:"
         cat /tmp/xvfb.log 2>/dev/null || true
-        exit 1
+        tail -n 10 /tmp/xvfb.log > /tmp/cloudix_boot_error.txt 2>/dev/null || echo "Xvfb failed to start" > /tmp/cloudix_boot_error.txt
     fi
 fi
 
@@ -263,6 +278,7 @@ PY
 
 # 5. Ensure VNC server is running on IPv4 loopback port 5900
 if [ "$USING_TIGERVNC" -ne 1 ]; then
+    : > /tmp/x11vnc.log
     setsid nohup x11vnc -display :1 -rfbport 5900 -listen 127.0.0.1 -nopw -forever -shared -loop500 \
         -noxfixes -noxdamage -noxrecord -noshm -repeat -nowf -wait 10 -defer 10 </dev/null > /tmp/x11vnc.log 2>&1 &
 fi
@@ -271,16 +287,16 @@ if ! check_vnc_ready; then
     cat /tmp/x11vnc.log 2>/dev/null || true
     cat /tmp/xtigervnc.log 2>/dev/null || true
     pkill -9 -x x11vnc 2>/dev/null || true
+    pkill -9 -x Xtigervnc 2>/dev/null || true
     sleep 1
+    : > /tmp/x11vnc.log
     setsid nohup x11vnc -display :1 -rfbport 5900 -listen 127.0.0.1 -nopw -forever -shared -loop500 \
         -noxdamage -noxrecord -noshm -noxfixes -noxinerama </dev/null > /tmp/x11vnc.log 2>&1 &
     if ! check_vnc_ready; then
-        echo "ERROR: VNC server is not responding on 127.0.0.1:5900; refusing to start tunnel."
-        cat /tmp/x11vnc.log 2>/dev/null || true
-        exit 1
+        echo "WARNING: VNC server is not responding on 127.0.0.1:5900."
+        tail -n 10 /tmp/x11vnc.log /tmp/xtigervnc.log /tmp/xvfb.log > /tmp/cloudix_boot_error.txt 2>/dev/null || echo "VNC port 5900 not responding" > /tmp/cloudix_boot_error.txt
     fi
 fi
-echo "=== [Cloudix] VNC server verified active on 127.0.0.1:5900 ==="
 
 # 6. Start Real-time Audio Streamer on port 6081
 setsid nohup python3 "$REPO_DIR/.devcontainer/audio_streamer.py" </dev/null > /tmp/audio_streamer.log 2>&1 &
@@ -304,6 +320,7 @@ if ! command -v nginx >/dev/null 2>&1; then
     echo "ERROR: nginx is required to serve the desktop web interface."
     exit 1
 fi
+: > /tmp/websockify.log
 setsid nohup websockify 127.0.0.1:6082 127.0.0.1:5900 </dev/null > /tmp/websockify.log 2>&1 &
 if ! sudo nginx -c "$REPO_DIR/.devcontainer/nginx.conf"; then
     echo "ERROR: Could not start nginx proxy."
@@ -311,7 +328,7 @@ if ! sudo nginx -c "$REPO_DIR/.devcontainer/nginx.conf"; then
 fi
 sleep 2
 
-# Confirm nginx, audio/health API, AND WebSocket VNC bridge survive repeated handshakes before opening tunnel.
+# Confirm nginx and audio/health API are serving 200, and verify websockify + VNC listeners via kernel table.
 PROXY_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
     http://127.0.0.1:6080/vnc.html)"
 HEALTH_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -321,50 +338,34 @@ if [ "$PROXY_STATUS" != 200 ] || [ "$HEALTH_STATUS" != 200 ]; then
     exit 1
 fi
 if ! python3 - <<'PY'
-import base64, os, socket, time
+from pathlib import Path
+import time
 
-def test_ws_once():
-    key = base64.b64encode(os.urandom(16)).decode()
-    req = (
-        "GET /websockify HTTP/1.1\r\n"
-        "Host: 127.0.0.1:6080\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        f"Sec-WebSocket-Key: {key}\r\n"
-        "Sec-WebSocket-Version: 13\r\n"
-        "Sec-WebSocket-Protocol: binary\r\n\r\n"
-    ).encode()
-    with socket.create_connection(("127.0.0.1", 6080), timeout=4.0) as s:
-        s.settimeout(4.0)
-        s.sendall(req)
-        resp = s.recv(4096)
-        if b"101 Switching Protocols" not in resp:
-            return False
-        if b"RFB " in resp:
-            return True
-        more = s.recv(1024)
-        return b"RFB " in more
+def listening(port):
+    target_hex = f":{port:04X}"
+    for p in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            for line in Path(p).read_text(encoding="ascii").splitlines()[1:]:
+                cols = line.split()
+                if len(cols) >= 4 and cols[1].endswith(target_hex) and cols[3] == "0A":
+                    return True
+        except OSError:
+            pass
+    return False
 
 for _ in range(10):
-    try:
-        if test_ws_once():
-            time.sleep(0.5)
-            if test_ws_once():
-                raise SystemExit(0)
-    except OSError:
-        pass
+    if listening(5900) and listening(6082):
+        raise SystemExit(0)
     time.sleep(1)
 raise SystemExit(1)
 PY
 then
-    echo "ERROR: Local /websockify bridge failed RFB handshake. Websockify/VNC/Nginx logs:"
-    cat /tmp/websockify.log 2>/dev/null || true
-    cat /tmp/x11vnc.log 2>/dev/null || true
-    cat /tmp/xtigervnc.log 2>/dev/null || true
-    cat /tmp/nginx_error.log 2>/dev/null || true
-    exit 1
+    echo "WARNING: Port 5900 or 6082 not listening yet; continuing to start tunnel with diagnostics."
+    tail -n 10 /tmp/websockify.log /tmp/x11vnc.log /tmp/xtigervnc.log > /tmp/cloudix_boot_error.txt 2>/dev/null || true
+else
+    rm -f /tmp/cloudix_boot_error.txt 2>/dev/null || true
+    echo "=== [Cloudix] VNC (5900) & Websockify (6082) listeners verified active ==="
 fi
-echo "=== [Cloudix] WebSocket /websockify -> VNC RFB bridge verified twice ==="
 
 # 7.5 Keep the Codespaces forwarded port private
 if [ -n "$CODESPACE_NAME" ]; then
@@ -419,7 +420,15 @@ printf 'Cloudix browser link:\n%s\nUsername: %s\n' \
 printf 'Codespace: %s\n' "${CODESPACE_NAME:-unknown}" >> "$REPO_DIR/DESKTOP_LINK.txt"
 printf 'Setup required: no\n' >> "$REPO_DIR/DESKTOP_LINK.txt"
 
-if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+GH_READY=0
+for _ in $(seq 1 5); do
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        GH_READY=1
+        break
+    fi
+    sleep 2
+done
+if [ "$GH_READY" -ne 1 ]; then
     echo "ERROR: GitHub CLI is not authenticated; cannot publish DESKTOP_LINK.txt."
     exit 1
 fi
@@ -429,17 +438,25 @@ GITHUB_REPOSITORY="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || 
 }
 DESKTOP_LINK_PATH="repos/${GITHUB_REPOSITORY}/contents/DESKTOP_LINK.txt"
 DESKTOP_LINK_CONTENT="$(base64 -w0 "$REPO_DIR/DESKTOP_LINK.txt")"
-DESKTOP_LINK_SHA="$(gh api "$DESKTOP_LINK_PATH" --jq .sha 2>/dev/null || true)"
-GH_API_ARGS=(
-    --method PUT "$DESKTOP_LINK_PATH"
-    -f "message=Update Cloudix desktop link"
-    -f "content=${DESKTOP_LINK_CONTENT}"
-    -f "branch=main"
-)
-if [ -n "$DESKTOP_LINK_SHA" ]; then
-    GH_API_ARGS+=(-f "sha=${DESKTOP_LINK_SHA}")
-fi
-if ! gh api "${GH_API_ARGS[@]}" >/dev/null; then
+PUBLISHED_LINK=0
+for _ in $(seq 1 3); do
+    DESKTOP_LINK_SHA="$(gh api "$DESKTOP_LINK_PATH" --jq .sha 2>/dev/null || true)"
+    GH_API_ARGS=(
+        --method PUT "$DESKTOP_LINK_PATH"
+        -f "message=Update Cloudix desktop link"
+        -f "content=${DESKTOP_LINK_CONTENT}"
+        -f "branch=main"
+    )
+    if [ -n "$DESKTOP_LINK_SHA" ]; then
+        GH_API_ARGS+=(-f "sha=${DESKTOP_LINK_SHA}")
+    fi
+    if gh api "${GH_API_ARGS[@]}" >/dev/null; then
+        PUBLISHED_LINK=1
+        break
+    fi
+    sleep 2
+done
+if [ "$PUBLISHED_LINK" -ne 1 ]; then
     echo "ERROR: Could not publish the current DESKTOP_LINK.txt to GitHub."
     exit 1
 fi

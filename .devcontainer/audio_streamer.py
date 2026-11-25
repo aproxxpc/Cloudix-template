@@ -166,14 +166,17 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
                         username = found_user
             except OSError:
                 pass
-            self._send_json(
-                200,
-                {
-                    "setup_required": SETUP_TOKEN_FILE.is_file(),
-                    "username": username,
-                    "vnc_ready": self._is_vnc_ready(),
-                },
-            )
+            vnc_ready = self._is_vnc_ready()
+            payload = {
+                "setup_required": SETUP_TOKEN_FILE.is_file(),
+                "username": username,
+                "vnc_ready": vnc_ready,
+            }
+            if not vnc_ready:
+                vnc_error = self._get_vnc_error()
+                if vnc_error:
+                    payload["vnc_error"] = vnc_error
+            self._send_json(200, payload)
             return
 
         if clean_path == "/audiows":
@@ -368,6 +371,42 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
 
     def _is_vnc_ready(self):
         return self._is_port_listening(5900) and self._is_port_listening(6082)
+
+    def _get_vnc_error(self):
+        try:
+            boot_err = Path("/tmp/cloudix_boot_error.txt")
+            if boot_err.is_file():
+                text = " ".join(
+                    boot_err.read_text(encoding="utf-8", errors="replace").splitlines()
+                ).strip()
+                if text:
+                    return text[:350]
+        except OSError:
+            pass
+        parts = []
+        for label, log_path in (
+            ("xtigervnc", "/tmp/xtigervnc.log"),
+            ("xvfb", "/tmp/xvfb.log"),
+            ("x11vnc", "/tmp/x11vnc.log"),
+            ("websockify", "/tmp/websockify.log"),
+        ):
+            try:
+                p = Path(log_path)
+                if p.is_file():
+                    lines = [
+                        line.strip()
+                        for line in p.read_text(
+                            encoding="utf-8", errors="replace"
+                        ).splitlines()
+                        if line.strip()
+                    ]
+                    if lines:
+                        parts.append(f"{label}: {lines[-1]}")
+            except OSError:
+                continue
+        if parts:
+            return " | ".join(parts)[:350]
+        return ""
 
     def _send_json(self, status, body):
         encoded_body = json.dumps(body).encode("utf-8")
