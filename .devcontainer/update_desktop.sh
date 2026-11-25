@@ -35,6 +35,7 @@ if [ -f /usr/share/code/resources/app/resources/linux/code.png ]; then
     VSCODE_ICON=/usr/share/code/resources/app/resources/linux/code.png
 fi
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ANTIGRAVITY_ICON=applications-development
 ANTIGRAVITY_ASAR="${HOME}/Downloads/Antigravity-x64/resources/app.asar"
 ANTIGRAVITY_ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
@@ -65,6 +66,13 @@ PY
     else
         echo "WARNING: Could not extract the Antigravity app icon."
     fi
+fi
+
+if [ "$ANTIGRAVITY_ICON" = "applications-development" ] && [ -f "${SCRIPT_DIR}/icons/antigravity.png" ]; then
+    mkdir -p "$ANTIGRAVITY_ICON_DIR"
+    cp -f "${SCRIPT_DIR}/icons/antigravity.png" "$ANTIGRAVITY_ICON_PATH"
+    sudo cp -f "${SCRIPT_DIR}/icons/antigravity.png" /usr/share/pixmaps/cloudix-antigravity.png 2>/dev/null || true
+    ANTIGRAVITY_ICON="$ANTIGRAVITY_ICON_PATH"
 fi
 
 # Target desktop folder (both ~/Desktop and /home/codespace/Desktop)
@@ -310,7 +318,10 @@ if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     done
 fi
 
-# Force XFCE Desktop to reload icons when an X display is active
+# Refresh icon theme cache and reload XFCE Desktop when an X display is active
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f -t "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor" >/dev/null 2>&1 || true
+fi
 export DISPLAY="${DISPLAY:-:1}"
 if [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ] || xset q >/dev/null 2>&1; then
     if pgrep -x xfdesktop >/dev/null; then

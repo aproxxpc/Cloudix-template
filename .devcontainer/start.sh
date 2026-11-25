@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cloudix-template-v6
+# cloudix-template-v7
 
 echo "=== [Cloudix] Starting Automated Desktop & Audio Services ==="
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
