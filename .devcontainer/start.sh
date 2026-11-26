@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cloudix-template-v7
+# cloudix-template-v8
 
 echo "=== [Cloudix] Starting Automated Desktop & Audio Services ==="
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -176,7 +176,7 @@ if page.exists():
         "",
         html,
     )
-    script_tag = '<script defer id="cloudix_audio_module" src="./cloudix_audio.js?v=audio-only-1"></script>'
+    script_tag = '<script defer id="cloudix_audio_module" src="./cloudix_audio.js?v=cloudix-v8"></script>'
     if script_tag not in html:
         if "</body>" not in html:
             raise SystemExit("Could not find closing body tag in noVNC vnc.html")

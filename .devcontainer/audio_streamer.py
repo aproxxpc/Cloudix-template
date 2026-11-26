@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import queue
 import re
@@ -15,9 +16,12 @@ import select
 import socket
 import subprocess
 import struct
+import tempfile
 import threading
+import zipfile
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, urlparse
 
 PORT = 6081
 AUDIO_SOURCE = os.environ.get("CLOUDIX_AUDIO_SOURCE", "Speaker.monitor")
@@ -189,6 +193,14 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(b"OK")
+            return
+
+        if clean_path == "/files":
+            self._handle_list_files()
+            return
+
+        if clean_path == "/download":
+            self._handle_download_file()
             return
 
         if clean_path.startswith("/launch"):
@@ -416,6 +428,202 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(encoded_body)
+
+    def _allowed_roots(self):
+        roots = [Path.home().resolve()]
+        workspaces = Path("/workspaces")
+        if workspaces.exists():
+            roots.append(workspaces.resolve())
+        return roots
+
+    def _quick_roots(self):
+        home = Path.home()
+        candidates = [
+            ("Downloads", home / "Downloads"),
+            ("Desktop", home / "Desktop"),
+            ("Documents", home / "Documents"),
+        ]
+        workspaces = Path("/workspaces")
+        if workspaces.is_dir():
+            sub_repos = [
+                child
+                for child in sorted(workspaces.iterdir(), key=lambda p: p.name.lower())
+                if child.is_dir() and not child.name.startswith(".")
+            ]
+            workspace_target = sub_repos[0] if len(sub_repos) == 1 else workspaces
+            candidates.append(("Workspace", workspace_target))
+        quick = []
+        for label, directory in candidates:
+            if directory.exists() or label == "Downloads":
+                try:
+                    directory.mkdir(parents=True, exist_ok=True)
+                    quick.append({"name": label, "path": str(directory.resolve())})
+                except OSError:
+                    continue
+        return quick
+
+    def _resolve_safe_path(self, raw_path):
+        try:
+            candidate = Path(raw_path).expanduser().resolve()
+        except OSError:
+            return None
+        for root in self._allowed_roots():
+            if candidate == root or candidate.is_relative_to(root):
+                return candidate
+        return None
+
+    def _handle_list_files(self):
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        raw_path = (query.get("path") or [""])[0].strip()
+        quick = self._quick_roots()
+        if not raw_path:
+            default_dir = (Path.home() / "Downloads").resolve()
+            default_dir.mkdir(parents=True, exist_ok=True)
+            target = default_dir
+        else:
+            target = self._resolve_safe_path(raw_path)
+            if target is None:
+                self._send_json(403, {"error": "Access to this path is restricted."})
+                return
+
+        if not target.exists() or not target.is_dir():
+            self._send_json(404, {"error": "Directory not found."})
+            return
+
+        parent_path = None
+        if target.parent != target and self._resolve_safe_path(str(target.parent)) is not None:
+            parent_path = str(target.parent)
+
+        entries = []
+        try:
+            children = sorted(
+                target.iterdir(),
+                key=lambda item: (not item.is_dir(), item.name.lower()),
+            )
+            for child in children:
+                if child.name == ".git":
+                    continue
+                try:
+                    is_dir = child.is_dir()
+                    size = 0 if is_dir else child.stat().st_size
+                except OSError:
+                    continue
+                entries.append(
+                    {
+                        "name": child.name,
+                        "path": str(child),
+                        "is_dir": is_dir,
+                        "size": size,
+                    }
+                )
+        except OSError as error:
+            self._send_json(500, {"error": f"Could not list directory: {error}"})
+            return
+
+        self._send_json(
+            200,
+            {
+                "path": str(target),
+                "parent": parent_path,
+                "roots": quick,
+                "entries": entries,
+            },
+        )
+
+    def _handle_download_file(self):
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        raw_path = (query.get("path") or [""])[0].strip()
+        if not raw_path:
+            self._send_json(400, {"error": "File or folder path is required."})
+            return
+
+        target = self._resolve_safe_path(raw_path)
+        if target is None:
+            self._send_json(403, {"error": "Access to this path is restricted."})
+            return
+        if not target.exists():
+            self._send_json(404, {"error": "File or folder not found."})
+            return
+
+        if target.is_file():
+            self._stream_local_file(target, target.name)
+            return
+
+        if target.is_dir():
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    prefix="cloudix-dl-", suffix=".zip", delete=False
+                ) as tmp:
+                    tmp_path = Path(tmp.name)
+                with zipfile.ZipFile(
+                    tmp_path, "w", compression=zipfile.ZIP_DEFLATED
+                ) as archive:
+                    base_parent = target.parent
+                    added_any = False
+                    for root_dir, dir_names, file_names in os.walk(target):
+                        dir_names[:] = [d for d in dir_names if d != ".git"]
+                        root_path = Path(root_dir)
+                        for filename in file_names:
+                            file_path = root_path / filename
+                            try:
+                                arcname = file_path.relative_to(base_parent)
+                                archive.write(file_path, arcname.as_posix())
+                                added_any = True
+                            except OSError:
+                                continue
+                    if not added_any:
+                        archive.writestr(f"{target.name}/", "")
+                self._stream_local_file(tmp_path, f"{target.name}.zip")
+            except OSError as error:
+                self._send_json(500, {"error": f"Could not package folder: {error}"})
+            finally:
+                if tmp_path is not None and tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+            return
+
+        self._send_json(400, {"error": "Unsupported file type."})
+
+    def _stream_local_file(self, file_path, download_name):
+        try:
+            file_size = file_path.stat().st_size
+            with file_path.open("rb") as handle:
+                mime_type, _ = mimetypes.guess_type(download_name)
+                if download_name.lower().endswith(".apk"):
+                    mime_type = "application/vnd.android.package-archive"
+                content_type = mime_type or "application/octet-stream"
+                safe_name = download_name.replace('"', "")
+                encoded_name = quote(download_name)
+
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(file_size))
+                self.send_header(
+                    "Content-Disposition",
+                    f"attachment; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}",
+                )
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+
+                while True:
+                    chunk = handle.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except OSError as error:
+            print(f"File stream error for {file_path}: {error}", flush=True)
+            try:
+                self._send_json(500, {"error": f"Could not read file: {error}"})
+            except OSError:
+                pass
 
     def do_audio_websocket(self):
         key = self.headers.get("Sec-WebSocket-Key")
