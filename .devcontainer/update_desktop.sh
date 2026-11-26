@@ -219,7 +219,7 @@ Comment=Browse the web
 Exec=/usr/bin/google-chrome-stable --no-sandbox --enable-webgl --enable-unsafe-swiftshader --disable-background-networking --disable-component-update --disable-sync --no-first-run %U
 Icon=google-chrome
 Terminal=false
-StartupNotify=true
+StartupNotify=false
 Categories=Network;WebBrowser;
 EOF
     cat << 'EOF' > "$APP_DIR/com.microsoft.VSCode.desktop"
@@ -231,7 +231,7 @@ Comment=Code Editing. Redefined.
 Exec=/usr/share/code/code --no-sandbox --unity-launch --reuse-window %F
 Icon=/usr/share/code/resources/app/resources/linux/code.png
 Terminal=false
-StartupNotify=true
+StartupNotify=false
 Categories=Development;IDE;
 EOF
     rm -f "$APP_DIR/code.desktop"
@@ -297,7 +297,7 @@ Name=${name}
 Exec=${command}
 Icon=${icon}
 Terminal=false
-StartupNotify=true
+StartupNotify=false
 Categories=Utility;
 EOF
 }

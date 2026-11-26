@@ -439,6 +439,7 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
     def _quick_roots(self):
         home = Path.home()
         candidates = [
+            ("Home", home),
             ("Downloads", home / "Downloads"),
             ("Desktop", home / "Desktop"),
             ("Documents", home / "Documents"),
@@ -476,9 +477,10 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         raw_path = (query.get("path") or [""])[0].strip()
+        show_hidden = (query.get("hidden") or ["0"])[0].strip() == "1"
         quick = self._quick_roots()
         if not raw_path:
-            default_dir = (Path.home() / "Downloads").resolve()
+            default_dir = Path.home().resolve()
             default_dir.mkdir(parents=True, exist_ok=True)
             target = default_dir
         else:
@@ -503,6 +505,8 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
             )
             for child in children:
                 if child.name == ".git":
+                    continue
+                if not show_hidden and child.name.startswith("."):
                     continue
                 try:
                     is_dir = child.is_dir()
@@ -559,16 +563,25 @@ class AudioStreamHandler(BaseHTTPRequestHandler):
                 ) as tmp:
                     tmp_path = Path(tmp.name)
                 with zipfile.ZipFile(
-                    tmp_path, "w", compression=zipfile.ZIP_DEFLATED
+                    tmp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1
                 ) as archive:
                     base_parent = target.parent
                     added_any = False
                     for root_dir, dir_names, file_names in os.walk(target):
                         dir_names[:] = [d for d in dir_names if d != ".git"]
                         root_path = Path(root_dir)
+                        if not file_names and not dir_names:
+                            try:
+                                rel_dir = root_path.relative_to(base_parent).as_posix().rstrip("/") + "/"
+                                archive.writestr(rel_dir, "")
+                                added_any = True
+                            except OSError:
+                                pass
                         for filename in file_names:
                             file_path = root_path / filename
                             try:
+                                if file_path.is_symlink() or not file_path.is_file():
+                                    continue
                                 arcname = file_path.relative_to(base_parent)
                                 archive.write(file_path, arcname.as_posix())
                                 added_any = True

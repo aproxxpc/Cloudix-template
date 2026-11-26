@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cloudix-template-v8
+# cloudix-template-v9
 
 echo "=== [Cloudix] Starting Automated Desktop & Audio Services ==="
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -223,7 +223,7 @@ Name=Google Chrome
 Exec=/usr/bin/google-chrome-stable --no-sandbox --enable-webgl --enable-unsafe-swiftshader --disable-background-networking --disable-component-update --disable-sync --no-first-run %U
 Icon=google-chrome
 Terminal=false
-StartupNotify=true
+StartupNotify=false
 Categories=Utility;
 EOF
 cat > "${PANEL_DIR}/launcher-18/17940020142.desktop" <<EOF
@@ -234,7 +234,7 @@ Name=Visual Studio Code
 Exec=/usr/share/code/code --no-sandbox --unity-launch %F
 Icon=${VSCODE_PANEL_ICON}
 Terminal=false
-StartupNotify=true
+StartupNotify=false
 Categories=Utility;
 EOF
 cat > "${PANEL_DIR}/launcher-19/17940020143.desktop" <<'EOF'
@@ -245,7 +245,7 @@ Name=File Manager
 Exec=thunar
 Icon=system-file-manager
 Terminal=false
-StartupNotify=true
+StartupNotify=false
 Categories=Utility;
 EOF
 cat > "${PANEL_DIR}/launcher-20/17940020144.desktop" <<'EOF'
@@ -256,7 +256,7 @@ Name=Terminal
 Exec=/usr/bin/xfce4-terminal --disable-server
 Icon=org.xfce.terminal
 Terminal=false
-StartupNotify=true
+StartupNotify=false
 Categories=Utility;
 EOF
 chmod +x "${PANEL_DIR}"/launcher-{17,18,19,20}/*.desktop 2>/dev/null || true
